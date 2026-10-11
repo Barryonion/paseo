@@ -729,6 +729,7 @@ async function getTrackedDiffTextForPath(input: {
     buildGitDiffArgs({
       ignoreWhitespace: input.ignoreWhitespace,
       extra: [
+        ...(input.oldPath ? ["--diff-filter=RC"] : []),
         ...getCheckoutDiffRefArgs(input.refsForDiff),
         "--",
         ...paths.map((path) => `:(literal)${path}`),
@@ -741,8 +742,8 @@ async function getTrackedDiffTextForPath(input: {
     },
   );
 
-  // A copy or rename can leave another changed file at the source path.
-  // Include that path for Git's detection, but return only the requested patch.
+  // A source path can participate in another rename/copy in the same request.
+  // Return only the requested destination; the filter keeps source edits out of its budget.
   let text = result.stdout;
   if (input.oldPath && !result.truncated) {
     text = result.stdout

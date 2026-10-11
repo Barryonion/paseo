@@ -630,6 +630,38 @@ describe("checkout git utilities", () => {
     expect(diff.diff).toContain("copy to copy.txt");
   });
 
+  it("keeps a small copy patch when its edited source exceeds the patch limit", async () => {
+    const original =
+      Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+    commitFile(repoDir, "source.txt", original, "copy source");
+    execFileSync("git", ["config", "diff.renames", "copies"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "copy.txt"), original);
+    writeFileSync(join(repoDir, "source.txt"), original + "added source line\n".repeat(80_000));
+    execFileSync("git", ["add", "copy.txt", "source.txt"], { cwd: repoDir });
+    expect(
+      execFileSync("git", ["diff", "--name-status", "HEAD"], { cwd: repoDir }).toString(),
+    ).toContain("C100\tsource.txt\tcopy.txt");
+
+    const diff = await getCheckoutDiff(repoDir, {
+      mode: "uncommitted",
+      includeStructured: true,
+    });
+    expect(diff.structured).toEqual([
+      expect.objectContaining({
+        path: "copy.txt",
+        oldPath: "source.txt",
+        additions: 0,
+        deletions: 0,
+        hunks: [],
+        status: "ok",
+      }),
+      expect.objectContaining({ path: "source.txt", status: "too_large", hunks: [] }),
+    ]);
+    expect(diff.diff).toContain("copy from source.txt");
+    expect(diff.diff).toContain("copy to copy.txt");
+    expect(diff.diff).not.toContain("+added source line");
+  });
+
   it("reads the origin URL once when collecting facts for an origin-tracking branch", async () => {
     setupRemoteTrackingMain(repoDir, tempDir);
 
