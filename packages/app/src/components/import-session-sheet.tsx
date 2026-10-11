@@ -13,13 +13,15 @@ import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-moda
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
+import { HostFilter } from "@/components/hosts/host-filter";
 import { useProviderIcon, useProviderIcons } from "@/components/provider-icons";
 import { useTimeAgo } from "@/hooks/use-time-ago";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useHostProjects } from "@/projects/host-projects";
 import { useHostFeature } from "@/runtime/host-features";
-import { useHosts } from "@/runtime/host-runtime";
+import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
+import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { i18n } from "@/i18n/i18next";
 import {
   aggregateSessionEntries,
@@ -74,6 +76,9 @@ type RecentSessionsResponse = Awaited<
 type SessionsQueryKey = ReadonlyArray<string | number | null>;
 
 function buildSessionsQueryKey(input: {
+  // Sessions live on the daemon that listed them; without the host in the key,
+  // switching hosts would replay the previous host's cached list.
+  serverId: string | null;
   cwd: string | null;
   query: string;
   limit: number;
@@ -81,6 +86,7 @@ function buildSessionsQueryKey(input: {
 }): SessionsQueryKey {
   return [
     "recent-provider-sessions",
+    input.serverId,
     input.cwd,
     input.query,
     input.limit,
@@ -103,16 +109,26 @@ function buildSessionsQueriesConfig(args: {
   providersToFetch: AgentProvider[] | null;
   visible: boolean;
   client: RecentProviderSessionsClient | null;
+  serverId: string | null;
   cwd: string | null;
   query: string;
   limit: number;
   hostDisconnectedMessage?: string;
 }): SessionsQueryConfig[] {
-  const { providersToFetch, visible, client, cwd, query, limit, hostDisconnectedMessage } = args;
+  const {
+    providersToFetch,
+    visible,
+    client,
+    serverId,
+    cwd,
+    query,
+    limit,
+    hostDisconnectedMessage,
+  } = args;
   if (providersToFetch === null) return [];
   const enabled = visible && Boolean(client);
   return providersToFetch.map((provider) => ({
-    queryKey: buildSessionsQueryKey({ cwd, query, limit, provider }),
+    queryKey: buildSessionsQueryKey({ serverId, cwd, query, limit, provider }),
     enabled,
     retry: false as const,
     placeholderData: keepPreviousData,
@@ -403,6 +419,56 @@ function SessionRows({
   );
 }
 
+/**
+ * The source host starts as the one the sheet was opened with (a workspace's host,
+ * or the chooser's pick) and can be switched mid-sheet via the host filter. A
+ * switched sheet has no workspace context anymore: its cwd/workspaceId belong to
+ * the original host, so imports land wherever the session's own directory
+ * resolves on the new host.
+ */
+function useImportSourceHost(input: {
+  visible: boolean;
+  serverId: string | null;
+  cwd: string | null | undefined;
+  workspaceId: string | null | undefined;
+  client: RecentProviderSessionsClient | null;
+}): {
+  activeServerId: string | null;
+  switchedHost: boolean;
+  activeCwd: string | null;
+  activeWorkspaceId: string | null | undefined;
+  effectiveClient: RecentProviderSessionsClient | null;
+  selectHost: (serverId: string) => void;
+} {
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(input.serverId);
+  const activeServerId = selectedServerId ?? input.serverId;
+  const switchedHost = activeServerId !== input.serverId;
+  const activeCwd = switchedHost ? null : (input.cwd ?? null);
+  const activeWorkspaceId = switchedHost ? null : input.workspaceId;
+  const runtimeClient = useHostRuntimeClient(activeServerId ?? "");
+  // Callers may inject the client (tests, workspace-screen); it stays authoritative
+  // for the host it was opened with, and the runtime owns every host after that.
+  const effectiveClient = switchedHost ? runtimeClient : (input.client ?? runtimeClient);
+
+  useEffect(() => {
+    if (input.visible) return;
+    setSelectedServerId(input.serverId);
+  }, [input.serverId, input.visible]);
+
+  const selectHost = useCallback((nextServerId: string) => {
+    setSelectedServerId(nextServerId);
+  }, []);
+
+  return {
+    activeServerId,
+    switchedHost,
+    activeCwd,
+    activeWorkspaceId,
+    effectiveClient,
+    selectHost,
+  };
+}
+
 export function ImportSessionSheet({
   visible,
   client,
@@ -417,6 +483,15 @@ export function ImportSessionSheet({
   const queryClient = useQueryClient();
   const { theme } = useUnistyles();
 
+  const {
+    activeServerId,
+    switchedHost,
+    activeCwd,
+    activeWorkspaceId,
+    effectiveClient,
+    selectHost,
+  } = useImportSourceHost({ visible, serverId, cwd, workspaceId, client });
+
   // "Show all" widens a workspace-scoped sheet to the whole host. The sheet's own
   // `cwd` stays the scope it was opened with, because that is what decides where
   // an imported agent lands.
@@ -425,8 +500,8 @@ export function ImportSessionSheet({
   const [pageLimit, setPageLimit] = useState(PER_PROVIDER_LIMIT);
   const [selectedProvider, setSelectedProvider] = useState<string>(ALL_FILTER_VALUE);
 
-  const scopeCwd = isShowingAllDirectories ? null : (cwd ?? null);
-  const supportsSearch = useHostFeature(serverId, "importSessionSearch");
+  const scopeCwd = isShowingAllDirectories ? null : activeCwd;
+  const supportsSearch = useHostFeature(activeServerId, "importSessionSearch");
   const query = useDebouncedValue(supportsSearch ? searchInput : "", SEARCH_DEBOUNCE_MS).trim();
 
   useEffect(() => {
@@ -435,20 +510,30 @@ export function ImportSessionSheet({
     setSearchInput("");
   }, [visible]);
 
+  const handleSelectHost = useCallback(
+    (nextServerId: string) => {
+      selectHost(nextServerId);
+      // The old workspace scope (and its search) does not carry to another machine.
+      setIsShowingAllDirectories(true);
+      setSearchInput("");
+    },
+    [selectHost],
+  );
+
   // A narrower or wider list starts at page one; keeping a grown limit would
   // fetch 200 rows for a query that matches three.
   useEffect(() => {
     setPageLimit(PER_PROVIDER_LIMIT);
   }, [query, scopeCwd]);
 
-  const { entries: snapshotEntries, supportsSnapshot } = useProvidersSnapshot(serverId, {
+  const { entries: snapshotEntries, supportsSnapshot } = useProvidersSnapshot(activeServerId, {
     cwd: scopeCwd,
     enabled: visible,
   });
-  const supportsWorkspaceTarget = useHostFeature(serverId, "importSessionWorkspaceTarget");
+  const supportsWorkspaceTarget = useHostFeature(activeServerId, "importSessionWorkspaceTarget");
   const requiresHostUpgrade = requiresImportSessionsHostUpgrade({
     supportsSnapshot,
-    workspaceId,
+    workspaceId: activeWorkspaceId,
     supportsWorkspaceTarget,
   });
 
@@ -462,20 +547,24 @@ export function ImportSessionSheet({
     [snapshotEntries],
   );
 
-  const sessionsQueryRoot = useMemo(() => ["recent-provider-sessions", scopeCwd], [scopeCwd]);
+  const sessionsQueryRoot = useMemo(
+    () => ["recent-provider-sessions", activeServerId, scopeCwd],
+    [activeServerId, scopeCwd],
+  );
 
   const queriesConfig = useMemo(
     () =>
       buildSessionsQueriesConfig({
         providersToFetch,
         visible,
-        client,
+        client: effectiveClient,
+        serverId: activeServerId,
         cwd: scopeCwd,
         query,
         limit: pageLimit,
         hostDisconnectedMessage: t("workspace.terminal.hostDisconnected"),
       }),
-    [providersToFetch, visible, client, scopeCwd, query, pageLimit, t],
+    [providersToFetch, visible, effectiveClient, activeServerId, scopeCwd, query, pageLimit, t],
   );
 
   const queries = useQueries({ queries: queriesConfig });
@@ -504,7 +593,10 @@ export function ImportSessionSheet({
     return aggregatedEntries.filter((entry) => entry.providerId === selectedProvider);
   }, [aggregatedEntries, selectedProvider]);
 
-  const projectServerIds = useMemo(() => (serverId ? [serverId] : []), [serverId]);
+  const projectServerIds = useMemo(
+    () => (activeServerId ? [activeServerId] : []),
+    [activeServerId],
+  );
   const hostProjects = useHostProjects(projectServerIds);
   const directoryProjects = useMemo<DirectoryProject[]>(
     () =>
@@ -559,8 +651,8 @@ export function ImportSessionSheet({
     setIsFilterOpen(false);
   }, []);
 
-  const getProviderIcon = useProviderIcons(serverId);
-  const SelectedProviderIcon = useProviderIcon(selectedProvider, serverId);
+  const getProviderIcon = useProviderIcons(activeServerId);
+  const SelectedProviderIcon = useProviderIcon(selectedProvider, activeServerId);
   const filterOptionIcons = useMemo(() => {
     const map = new Map<string, React.ReactNode>();
     map.set(ALL_FILTER_VALUE, <Layers size={14} color={theme.colors.foregroundMuted} />);
@@ -596,7 +688,7 @@ export function ImportSessionSheet({
 
   const importMutation = useMutation({
     mutationFn: async (entry: FetchRecentProviderSessionEntry) => {
-      if (!client) {
+      if (!effectiveClient) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
       if (!entry.cwd) {
@@ -604,11 +696,11 @@ export function ImportSessionSheet({
       }
       const target = resolveImportTarget({
         entryCwd: entry.cwd,
-        workspaceCwd: cwd,
-        workspaceId,
+        workspaceCwd: activeCwd,
+        workspaceId: activeWorkspaceId,
         isScopedListing: scopeCwd !== null,
       });
-      const agent = await client.importAgent({
+      const agent = await effectiveClient.importAgent({
         providerId: entry.providerId,
         providerHandleId: entry.providerHandleId,
         cwd: entry.cwd,
@@ -618,6 +710,14 @@ export function ImportSessionSheet({
     },
     onSuccess: ({ agent, target }) => {
       onClose();
+      // A switched sheet imported onto another host; only that host can resolve
+      // the agent's route. The caller's callbacks are bound to the host the
+      // sheet was opened on, so navigation happens here instead. A switched
+      // host is by construction a picked serverId, never the null default.
+      if (switchedHost && activeServerId !== null) {
+        navigateToAgent({ serverId: activeServerId, agentId: agent.id });
+        return;
+      }
       if (target.crossWorkspace) {
         onImported?.(agent);
       } else {
@@ -657,10 +757,16 @@ export function ImportSessionSheet({
   const handleRetryProvider = useCallback(
     (provider: string) => {
       void queryClient.refetchQueries({
-        queryKey: buildSessionsQueryKey({ cwd: scopeCwd, query, limit: pageLimit, provider }),
+        queryKey: buildSessionsQueryKey({
+          serverId: activeServerId,
+          cwd: scopeCwd,
+          query,
+          limit: pageLimit,
+          provider,
+        }),
       });
     },
-    [pageLimit, query, queryClient, scopeCwd],
+    [activeServerId, pageLimit, query, queryClient, scopeCwd],
   );
 
   const handleShowAll = useCallback(() => setIsShowingAllDirectories(true), []);
@@ -668,9 +774,10 @@ export function ImportSessionSheet({
 
   const hosts = useHosts();
   const hostLabel = useMemo(
-    () => hosts.find((host) => host.serverId === serverId)?.label ?? serverId ?? "",
-    [hosts, serverId],
+    () => hosts.find((host) => host.serverId === activeServerId)?.label ?? activeServerId ?? "",
+    [hosts, activeServerId],
   );
+  const showHostFilter = hosts.length > 1;
 
   const header = useMemo<SheetHeader>(
     () => ({
@@ -736,6 +843,17 @@ export function ImportSessionSheet({
       desktopMaxWidth={560}
       snapPoints={IMPORT_SHEET_SNAP_POINTS}
     >
+      {showHostFilter ? (
+        <View style={styles.hostFilterWrap}>
+          <HostFilter
+            hosts={hosts}
+            selectedHost={activeServerId ?? ""}
+            onSelectHost={handleSelectHost}
+            includeAllHost={false}
+            triggerTestID="import-session-host-filter"
+          />
+        </View>
+      ) : null}
       {showFilter ? (
         <View ref={filterAnchorRef} collapsable={false} style={styles.filterTriggerWrap}>
           <Pressable
@@ -771,7 +889,7 @@ export function ImportSessionSheet({
         </View>
       ) : null}
       <SheetStatusMessages
-        isClientReady={Boolean(client)}
+        isClientReady={Boolean(effectiveClient)}
         isSnapshotUnsupported={isSnapshotUnsupported}
         hasNoImportableProviders={hasNoImportableProviders}
         isLoadingSessions={isLoadingSessions}
@@ -783,7 +901,7 @@ export function ImportSessionSheet({
       ) : null}
       {visibleEntries.length > 0 ? (
         <SessionRows
-          serverId={serverId}
+          serverId={activeServerId}
           entries={visibleEntries}
           disabled={importMutation.isPending}
           importingSessionKey={importingSessionKey}
@@ -823,6 +941,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   subtitleAction: {
     marginHorizontal: -theme.spacing[2],
+  },
+  hostFilterWrap: {
+    paddingBottom: theme.spacing[2],
   },
   filterTriggerWrap: {
     paddingBottom: theme.spacing[2],

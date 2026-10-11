@@ -11,6 +11,7 @@ import type {
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ImportSessionSheet } from "@/components/import-session-sheet";
+import { navigateToAgent } from "@/utils/navigate-to-agent";
 
 const { theme } = vi.hoisted(() => ({
   theme: {
@@ -203,8 +204,46 @@ vi.mock("@/runtime/host-features", () => ({
     mockHostFeatures.current[feature] === true,
 }));
 
+const mockHosts = vi.hoisted(() => ({
+  current: [{ serverId: "server-1", label: "workbench" }] as Array<{
+    serverId: string;
+    label: string;
+  }>,
+}));
+const mockRuntimeClient = vi.hoisted(() => ({
+  current: null as null | Pick<DaemonClient, "fetchRecentProviderSessions" | "importAgent">,
+}));
+
 vi.mock("@/runtime/host-runtime", () => ({
-  useHosts: () => [{ serverId: "server-1", label: "workbench" }],
+  useHosts: () => mockHosts.current,
+  useHostRuntimeClient: (serverId: string) =>
+    serverId === "server-2" ? mockRuntimeClient.current : null,
+}));
+
+vi.mock("@/components/hosts/host-filter", () => ({
+  HostFilter: ({
+    selectedHost,
+    onSelectHost,
+  }: {
+    selectedHost: string;
+    onSelectHost: (serverId: string) => void;
+  }) => {
+    const handleClick = React.useCallback(() => onSelectHost("server-2"), [onSelectHost]);
+    return (
+      <button
+        type="button"
+        data-testid="import-session-host-filter"
+        data-selected={selectedHost}
+        onClick={handleClick}
+      >
+        host filter
+      </button>
+    );
+  },
+}));
+
+vi.mock("@/utils/navigate-to-agent", () => ({
+  navigateToAgent: vi.fn(),
 }));
 
 const mockHostProjects = vi.hoisted(() => ({
@@ -228,6 +267,8 @@ interface RenderOptions {
     entries?: ProviderSnapshotEntry[];
     supportsSnapshot?: boolean;
   };
+  hosts?: Array<{ serverId: string; label: string }>;
+  runtimeClient?: Pick<DaemonClient, "fetchRecentProviderSessions" | "importAgent">;
 }
 
 function applyHostMocks(options?: RenderOptions) {
@@ -240,6 +281,8 @@ function applyHostMocks(options?: RenderOptions) {
     importSessionWorkspaceTarget: true,
   };
   mockHostProjects.current = options?.projects ?? [];
+  mockHosts.current = options?.hosts ?? [{ serverId: "server-1", label: "workbench" }];
+  mockRuntimeClient.current = options?.runtimeClient ?? null;
 }
 
 function renderSheet(
@@ -1309,5 +1352,135 @@ describe("ImportSessionSheet", () => {
     await waitFor(() => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("hides the host filter when only one host is connected", async () => {
+    const fetchRecentProviderSessions = vi.fn(async () => ({
+      requestId: "recent-provider-sessions",
+      entries: [],
+    }));
+
+    renderSheet(
+      { fetchRecentProviderSessions, importAgent: vi.fn() } as Pick<
+        DaemonClient,
+        "fetchRecentProviderSessions" | "importAgent"
+      >,
+      {
+        snapshot: { supportsSnapshot: true, entries: [createSnapshotEntry("claude")] },
+      },
+    );
+
+    await screen.findByText("No recent sessions to import.");
+    expect(screen.queryByTestId("import-session-host-filter")).toBeNull();
+  });
+
+  it("switches the source host to the runtime client and widens scope", async () => {
+    const fetchRecentProviderSessions = vi.fn(async () => ({
+      requestId: "recent-provider-sessions",
+      entries: [],
+    }));
+    const runtimeFetch = vi.fn(async () => ({
+      requestId: "recent-provider-sessions",
+      entries: [
+        createProviderSessionEntry({
+          providerId: "claude",
+          providerLabel: "Claude Code",
+          title: "Remote session",
+        }),
+      ],
+    }));
+
+    renderSheet(
+      { fetchRecentProviderSessions, importAgent: vi.fn() } as Pick<
+        DaemonClient,
+        "fetchRecentProviderSessions" | "importAgent"
+      >,
+      {
+        snapshot: { supportsSnapshot: true, entries: [createSnapshotEntry("claude")] },
+        hosts: [
+          { serverId: "server-1", label: "workbench" },
+          { serverId: "server-2", label: "rack" },
+        ],
+        runtimeClient: {
+          fetchRecentProviderSessions: runtimeFetch,
+          importAgent: vi.fn(),
+        } as Pick<DaemonClient, "fetchRecentProviderSessions" | "importAgent">,
+      },
+    );
+
+    // Workspace scope first: the sheet's own host lists with its cwd.
+    await waitFor(() => {
+      expect(fetchRecentProviderSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: "/repo/paseo", providers: ["claude"] }),
+      );
+    });
+
+    fireEvent.click(await screen.findByTestId("import-session-host-filter"));
+
+    await screen.findByText("Remote session");
+    expect(runtimeFetch).toHaveBeenCalledWith(expect.objectContaining({ providers: ["claude"] }));
+    // The other machine has no workspace scope: no cwd in the request.
+    expect(runtimeFetch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: expect.anything() }),
+    );
+    expect(fetchRecentProviderSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("imports on the switched host and navigates there", async () => {
+    const fetchRecentProviderSessions = vi.fn(async () => ({
+      requestId: "recent-provider-sessions",
+      entries: [],
+    }));
+    const runtimeFetch = vi.fn(async () => ({
+      requestId: "recent-provider-sessions",
+      entries: [createProviderSessionEntry({ providerId: "claude" })],
+    }));
+    const runtimeImport = vi.fn(async () => createImportedAgentSnapshot("agent-on-rack"));
+    const onImportedAgent = vi.fn();
+    const onImported = vi.fn();
+    const onClose = vi.fn();
+
+    renderSheet(
+      { fetchRecentProviderSessions, importAgent: vi.fn() } as Pick<
+        DaemonClient,
+        "fetchRecentProviderSessions" | "importAgent"
+      >,
+      {
+        onClose,
+        onImportedAgent,
+        onImported,
+        workspaceId: "ws-current",
+        snapshot: { supportsSnapshot: true, entries: [createSnapshotEntry("claude")] },
+        hosts: [
+          { serverId: "server-1", label: "workbench" },
+          { serverId: "server-2", label: "rack" },
+        ],
+        runtimeClient: {
+          fetchRecentProviderSessions: runtimeFetch,
+          importAgent: runtimeImport,
+        } as Pick<DaemonClient, "fetchRecentProviderSessions" | "importAgent">,
+      },
+    );
+
+    fireEvent.click(await screen.findByTestId("import-session-host-filter"));
+    fireEvent.click(await screen.findByTestId("import-session-session-claude-provider-thread-1"));
+
+    await waitFor(() => {
+      expect(runtimeImport).toHaveBeenCalledWith({
+        providerId: "claude",
+        providerHandleId: "provider-thread-1",
+        cwd: "/repo/paseo",
+      });
+    });
+    await waitFor(() => {
+      expect(navigateToAgent).toHaveBeenCalledWith({
+        serverId: "server-2",
+        agentId: "agent-on-rack",
+      });
+    });
+    // The caller's callbacks belong to the host the sheet opened on.
+    expect(onImportedAgent).not.toHaveBeenCalled();
+    expect(onImported).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
