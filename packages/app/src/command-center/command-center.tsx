@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronRight, Folder, X } from "lucide-react-native";
+import { Check, ChevronRight, Folder, MessageSquare, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { BottomSheetFlatList, type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
 import { AgentStatusDot } from "@/components/agent-status-dot";
@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/isolated-bottom-sheet-modal";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
+import { useAgentHistory } from "@/hooks/use-agent-history";
 import { useAggregatedAgents, type AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useProjects } from "@/hooks/use-projects";
 import {
@@ -78,6 +79,9 @@ const ThemedTextInput = withUnistyles(TextInput, (theme) => ({
   placeholderTextColor: theme.colors.foregroundMuted,
 }));
 const ThemedFolder = withUnistyles(Folder, (theme) => ({ color: theme.colors.foregroundMuted }));
+const ThemedMessageSquare = withUnistyles(MessageSquare, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
 const ThemedCheck = withUnistyles(Check, (theme) => ({ color: theme.colors.foreground }));
 const ThemedChevronRight = withUnistyles(ChevronRight, (theme) => ({
   color: theme.colors.foregroundMuted,
@@ -88,6 +92,10 @@ const ThemedLoadingSpinner = withUnistyles(LoadingSpinner, (theme) => ({
 }));
 const COMMAND_CENTER_SNAP_POINTS = ["60%", "90%"];
 const KEYBOARD_SHOULD_PERSIST_TAPS = "always" as const;
+const SCOPE_PLACEHOLDER_KEY = {
+  files: "shell.commandCenter.filePlaceholder",
+  sessions: "shell.commandCenter.sessionsPlaceholder",
+} as const;
 
 function sortAgents(left: AggregatedAgent, right: AggregatedAgent): number {
   const leftNeedsInput = (left.pendingPermissionCount ?? 0) > 0 ? 1 : 0;
@@ -217,6 +225,56 @@ function useBuiltInSections(open: boolean, query: string): CommandCenterResultSe
   }, [open, query, rows, t]);
 }
 
+function compareSessionsByActivity(
+  left: CommandCenterAgentResult,
+  right: CommandCenterAgentResult,
+): number {
+  return right.agent.lastActivityAt.getTime() - left.agent.lastActivityAt.getTime();
+}
+
+/**
+ * Session history rows for the sessions scope: every session on every connected
+ * host, archived included, sorted by last activity. Unlike the live agents
+ * section this comes from `useAgentHistory`, so it survives archived workspaces
+ * and daemon restarts.
+ */
+function useSessionRows(
+  open: boolean,
+  scope: CommandCenterScope,
+): {
+  rows: CommandCenterAgentResult[];
+  loading: boolean;
+} {
+  const { t } = useTranslation();
+  const showHost = useHosts().length > 1;
+  const enabled = open && scope === "sessions";
+  const { agents, isInitialLoad } = useAgentHistory({ enabled });
+  const rows = useMemo(() => {
+    if (!enabled) return [];
+    return agents.map<CommandCenterAgentResult>((agent) => ({
+      kind: "agent",
+      id: `agent:${agent.serverId}:${agent.id}`,
+      agent,
+      title: agent.title || t("shell.commandCenter.newAgent"),
+      subtitle: joinSubtitleParts([
+        showHost ? agent.serverLabel : null,
+        agent.projectPlacement?.workspaceName ?? shortenPath(agent.cwd),
+        formatTimeAgo(agent.lastActivityAt),
+      ]),
+      run: () => {
+        clearCommandCenterFocusRestoreElement();
+        navigateToAgent({
+          serverId: agent.serverId,
+          agentId: agent.id,
+          workspaceId: agent.workspaceId,
+          pin: true,
+        });
+      },
+    }));
+  }, [agents, enabled, showHost, t]);
+  return { rows, loading: isInitialLoad };
+}
+
 interface CommandCenterState {
   open: boolean;
   scope: CommandCenterScope;
@@ -231,6 +289,7 @@ interface CommandCenterState {
   inputRef: React.RefObject<EditingTextInputHandle | null>;
   fileSearchLoading: boolean;
   fileSearchError: string | null;
+  sessionsLoading: boolean;
   close(): void;
   select(result: CommandCenterResult): void;
   key(key: string): boolean;
@@ -258,6 +317,24 @@ function useCommandCenterState(): CommandCenterState {
     enabled: open && (scope === "files" || Boolean(query.trim())),
     query,
   });
+  const sessionRows = useSessionRows(open, scope);
+  const sessionSections = useMemo<CommandCenterResultSection[]>(
+    () => [
+      {
+        id: "sessions",
+        band: PINNED_SECTION_BAND,
+        rank: 5,
+        title: t("shell.commandCenter.sessions"),
+        results: filterAndRankBuiltInResults(
+          sessionRows.rows,
+          query,
+          agentSearchFields,
+          compareSessionsByActivity,
+        ),
+      },
+    ],
+    [query, sessionRows.rows, t],
+  );
   const fileSections = useMemo<CommandCenterResultSection[]>(() => {
     const results = fileSearchEntries.map<CommandCenterFileResult>((entry) => ({
       kind: "file",
@@ -284,15 +361,13 @@ function useCommandCenterState(): CommandCenterState {
     () => buildContributionSections(snapshot.contributions, query),
     [query, snapshot.contributions],
   );
-  const projection = useMemo(
-    () =>
-      projectCommandCenterRows(
-        scope === "files"
-          ? fileSections
-          : [...contributionSections, ...fileSections, ...builtInSections],
-      ),
-    [builtInSections, contributionSections, fileSections, scope],
-  );
+  const projection = useMemo(() => {
+    let sections: CommandCenterResultSection[];
+    if (scope === "files") sections = fileSections;
+    else if (scope === "sessions") sections = sessionSections;
+    else sections = [...contributionSections, ...fileSections, ...builtInSections];
+    return projectCommandCenterRows(sections);
+  }, [builtInSections, contributionSections, fileSections, scope, sessionSections]);
   const resolvedActiveId = preserveActiveResultId(activeId, projection.selectableResults);
 
   // Editing the query re-ranks everything, so an arrow-key selection made under the previous
@@ -373,6 +448,7 @@ function useCommandCenterState(): CommandCenterState {
     inputRef,
     fileSearchLoading,
     fileSearchError,
+    sessionsLoading: sessionRows.loading,
     close,
     select,
     key,
@@ -579,6 +655,29 @@ export function CommandCenter() {
   const state = useCommandCenterState();
   const isCompact = useIsCompactFormFactor();
   const showBottomSheet = isCompact && isNative;
+  // The web-modal and bottom-sheet headers below duplicate the field row; these
+  // scope-dependent values are computed once so both branches stay identical.
+  const scopeChip = state.scope ? (
+    <ScopeChip
+      label={t(
+        state.scope === "files" ? "shell.commandCenter.files" : "shell.commandCenter.sessions",
+      )}
+      icon={state.scope === "files" ? ThemedFolder : ThemedMessageSquare}
+      testID={
+        state.scope === "files" ? "command-center-files-scope" : "command-center-sessions-scope"
+      }
+      onRemove={state.clearScope}
+    />
+  ) : null;
+  const placeholder = t(
+    state.scope ? SCOPE_PLACEHOLDER_KEY[state.scope] : "shell.commandCenter.placeholder",
+  );
+  const searchLoading = state.fileSearchLoading || state.sessionsLoading;
+  const searchLoadingLabel = t(
+    state.scope === "sessions"
+      ? "shell.commandCenter.searchingSessions"
+      : "shell.commandCenter.searchingFiles",
+  );
   const modalLayer = useGlobalWebOverlayLayer("modal", isWeb && state.open && !showBottomSheet);
   const listRef = useRef<FlatList<CommandCenterListRow>>(null);
   const bottomSheetListRef = useRef<BottomSheetFlatListMethods>(null);
@@ -734,9 +833,7 @@ export function CommandCenter() {
         accessible={false}
       >
         <View style={[styles.bottomSheetHeader, styles.searchRow]} testID="command-center-header">
-          {state.scope === "files" ? (
-            <ScopeChip label={t("shell.commandCenter.files")} onRemove={state.clearScope} />
-          ) : null}
+          {scopeChip}
           <ThemedBottomSheetTextInput
             testID="command-center-input"
             ref={bottomSheetInputRef}
@@ -745,20 +842,13 @@ export function CommandCenter() {
             onChangeText={state.setQuery}
             onKeyPress={keyPress}
             onSubmitEditing={submit}
-            placeholder={
-              state.scope === "files"
-                ? t("shell.commandCenter.filePlaceholder")
-                : t("shell.commandCenter.placeholder")
-            }
+            placeholder={placeholder}
             style={[styles.input, styles.growingInput]}
             autoCapitalize="none"
             autoCorrect={false}
             autoFocus
           />
-          <FileSearchLoadingIndicator
-            loading={state.fileSearchLoading}
-            label={t("shell.commandCenter.searchingFiles")}
-          />
+          <FileSearchLoadingIndicator loading={searchLoading} label={searchLoadingLabel} />
         </View>
         {fileSearchError}
         <BottomSheetFlatList ref={bottomSheetListRef} {...commonListProps} />
@@ -773,28 +863,19 @@ export function CommandCenter() {
           <Pressable style={styles.backdrop} onPress={state.close} />
           <View ref={setWebOverlayScope} testID="command-center-panel" style={styles.panel}>
             <View style={[styles.header, styles.searchRow]} testID="command-center-header">
-              {state.scope === "files" ? (
-                <ScopeChip label={t("shell.commandCenter.files")} onRemove={state.clearScope} />
-              ) : null}
+              {scopeChip}
               <ThemedTextInput
                 testID="command-center-input"
                 ref={state.inputRef}
                 initialValue={state.query}
                 onChangeText={state.setQuery}
-                placeholder={
-                  state.scope === "files"
-                    ? t("shell.commandCenter.filePlaceholder")
-                    : t("shell.commandCenter.placeholder")
-                }
+                placeholder={placeholder}
                 style={[styles.input, styles.growingInput]}
                 autoCapitalize="none"
                 autoCorrect={false}
                 autoFocus
               />
-              <FileSearchLoadingIndicator
-                loading={state.fileSearchLoading}
-                label={t("shell.commandCenter.searchingFiles")}
-              />
+              <FileSearchLoadingIndicator loading={searchLoading} label={searchLoadingLabel} />
             </View>
             {fileSearchError}
             <FlatList ref={listRef} {...commonListProps} />
@@ -824,16 +905,26 @@ function FileSearchLoadingIndicator({ loading, label }: { loading: boolean; labe
 // The chip sits at the input's own height and type size so it reads as the scope of the field
 // rather than a badge dropped into the query. Its 28px matches the input's line box, so showing or
 // dropping the scope cannot resize the header.
-function ScopeChip({ label, onRemove }: { label: string; onRemove(): void }) {
+function ScopeChip({
+  label,
+  icon: Icon,
+  testID,
+  onRemove,
+}: {
+  label: string;
+  icon: typeof ThemedFolder;
+  testID: string;
+  onRemove(): void;
+}) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onRemove}
       style={styles.scopeChip}
-      testID="command-center-files-scope"
+      testID={testID}
     >
-      <ThemedFolder size={14} strokeWidth={2.2} />
+      <Icon size={14} strokeWidth={2.2} />
       <Text style={styles.scopeChipLabel}>{label}</Text>
       <ThemedX size={12} strokeWidth={2.2} />
     </Pressable>
