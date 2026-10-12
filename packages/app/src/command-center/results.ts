@@ -211,14 +211,18 @@ const DEFAULT_CATEGORY_RESULT_LIMIT = 5;
  * `tiebreak` is the caller's own ordering (alphabetical for workspaces, status and recency for
  * agents). It decides equal-scoring rows, so an agent awaiting input still outranks an idle one
  * that matched exactly as well.
+ *
+ * `emptyQueryLimit` caps the unfiltered list (the default palette keeps 5 per category;
+ * the agents scope shows the 30 most recently active instead).
  */
 export function filterAndRankBuiltInResults<Row>(
   rows: readonly Row[],
   query: string,
   fieldsOf: (row: Row) => CommandCenterSearchFields,
   tiebreak: (left: Row, right: Row) => number,
+  emptyQueryLimit: number = DEFAULT_CATEGORY_RESULT_LIMIT,
 ): Row[] {
-  if (!query.trim()) return rows.slice(0, DEFAULT_CATEGORY_RESULT_LIMIT);
+  if (!query.trim()) return rows.slice(0, emptyQueryLimit);
 
   const scored: { row: Row; score: CommandCenterScore }[] = [];
   for (const row of rows) {

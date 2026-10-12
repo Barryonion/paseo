@@ -291,9 +291,9 @@ describe("translation resources", () => {
     );
     expect(en.shell.commandCenter.filePlaceholder).toBe("Search files...");
     expect(en.shell.commandCenter.files).toBe("Files");
-    expect(en.shell.commandCenter.sessions).toBe("Sessions");
-    expect(en.shell.commandCenter.sessionsPlaceholder).toBe("Search sessions...");
-    expect(en.shell.commandCenter.searchingSessions).toBe("Searching sessions...");
+    expect(en.shell.commandCenter.agents).toBe("Agents");
+    expect(en.shell.commandCenter.agentPlaceholder).toBe("Search agents...");
+    expect(en.shell.commandCenter.searchingAgents).toBe("Searching agents...");
     expect(en.shell.commandCenter.noMatches).toBe("No matches");
     expect(en.shell.commandCenter.actions).toBe("Actions");
     expect(en.shell.commandCenter.workspaces).toBe("Workspaces");

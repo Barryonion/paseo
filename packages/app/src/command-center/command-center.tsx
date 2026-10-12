@@ -29,7 +29,6 @@ import {
 } from "@/components/ui/isolated-bottom-sheet-modal";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
-import { useAgentHistory } from "@/hooks/use-agent-history";
 import { useAggregatedAgents, type AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useProjects } from "@/hooks/use-projects";
 import {
@@ -92,9 +91,11 @@ const ThemedLoadingSpinner = withUnistyles(LoadingSpinner, (theme) => ({
 }));
 const COMMAND_CENTER_SNAP_POINTS = ["60%", "90%"];
 const KEYBOARD_SHOULD_PERSIST_TAPS = "always" as const;
+/** Rows the agents scope lists before any query: the most recently active agents. */
+const AGENTS_SCOPE_RESULT_LIMIT = 30;
 const SCOPE_PLACEHOLDER_KEY = {
   files: "shell.commandCenter.filePlaceholder",
-  sessions: "shell.commandCenter.sessionsPlaceholder",
+  agents: "shell.commandCenter.agentPlaceholder",
 } as const;
 
 function sortAgents(left: AggregatedAgent, right: AggregatedAgent): number {
@@ -225,7 +226,7 @@ function useBuiltInSections(open: boolean, query: string): CommandCenterResultSe
   }, [open, query, rows, t]);
 }
 
-function compareSessionsByActivity(
+function compareAgentsByActivity(
   left: CommandCenterAgentResult,
   right: CommandCenterAgentResult,
 ): number {
@@ -233,12 +234,12 @@ function compareSessionsByActivity(
 }
 
 /**
- * Session history rows for the sessions scope: every session on every connected
- * host, archived included, sorted by last activity. Unlike the live agents
- * section this comes from `useAgentHistory`, so it survives archived workspaces
- * and daemon restarts.
+ * Agent rows for the agents scope: every agent on every connected host, archived
+ * included, sorted by last activity and fuzzy-matched by name client-side. The
+ * scope holds directory demand itself (same as the built-in agents section), so
+ * it works even when nothing else has woken the host.
  */
-function useSessionRows(
+function useAgentDirectoryRows(
   open: boolean,
   scope: CommandCenterScope,
 ): {
@@ -246,31 +247,37 @@ function useSessionRows(
   loading: boolean;
 } {
   const { t } = useTranslation();
-  const showHost = useHosts().length > 1;
-  const enabled = open && scope === "sessions";
-  const { agents, isInitialLoad } = useAgentHistory({ enabled });
+  const daemons = useHosts();
+  const showHost = daemons.length > 1;
+  const enabled = open && scope === "agents";
+  const { agents, isInitialLoad } = useAggregatedAgents({
+    includeArchived: true,
+    demand: enabled,
+  });
   const rows = useMemo(() => {
     if (!enabled) return [];
-    return agents.map<CommandCenterAgentResult>((agent) => ({
-      kind: "agent",
-      id: `agent:${agent.serverId}:${agent.id}`,
-      agent,
-      title: agent.title || t("shell.commandCenter.newAgent"),
-      subtitle: joinSubtitleParts([
-        showHost ? agent.serverLabel : null,
-        agent.projectPlacement?.workspaceName ?? shortenPath(agent.cwd),
-        formatTimeAgo(agent.lastActivityAt),
-      ]),
-      run: () => {
-        clearCommandCenterFocusRestoreElement();
-        navigateToAgent({
-          serverId: agent.serverId,
-          agentId: agent.id,
-          workspaceId: agent.workspaceId,
-          pin: true,
-        });
-      },
-    }));
+    return agents
+      .map<CommandCenterAgentResult>((agent) => ({
+        kind: "agent",
+        id: `agent:${agent.serverId}:${agent.id}`,
+        agent,
+        title: agent.title || t("shell.commandCenter.newAgent"),
+        subtitle: joinSubtitleParts([
+          showHost ? agent.serverLabel : null,
+          agent.projectPlacement?.workspaceName ?? shortenPath(agent.cwd),
+          formatTimeAgo(agent.lastActivityAt),
+        ]),
+        run: () => {
+          clearCommandCenterFocusRestoreElement();
+          navigateToAgent({
+            serverId: agent.serverId,
+            agentId: agent.id,
+            workspaceId: agent.workspaceId,
+            pin: true,
+          });
+        },
+      }))
+      .sort(compareAgentsByActivity);
   }, [agents, enabled, showHost, t]);
   return { rows, loading: isInitialLoad };
 }
@@ -289,7 +296,7 @@ interface CommandCenterState {
   inputRef: React.RefObject<EditingTextInputHandle | null>;
   fileSearchLoading: boolean;
   fileSearchError: string | null;
-  sessionsLoading: boolean;
+  agentsLoading: boolean;
   close(): void;
   select(result: CommandCenterResult): void;
   key(key: string): boolean;
@@ -317,23 +324,24 @@ function useCommandCenterState(): CommandCenterState {
     enabled: open && (scope === "files" || Boolean(query.trim())),
     query,
   });
-  const sessionRows = useSessionRows(open, scope);
-  const sessionSections = useMemo<CommandCenterResultSection[]>(
+  const agentRows = useAgentDirectoryRows(open, scope);
+  const agentSections = useMemo<CommandCenterResultSection[]>(
     () => [
       {
-        id: "sessions",
+        id: "agents",
         band: PINNED_SECTION_BAND,
         rank: 5,
-        title: t("shell.commandCenter.sessions"),
+        title: t("shell.commandCenter.agents"),
         results: filterAndRankBuiltInResults(
-          sessionRows.rows,
+          agentRows.rows,
           query,
           agentSearchFields,
-          compareSessionsByActivity,
+          compareAgentsByActivity,
+          AGENTS_SCOPE_RESULT_LIMIT,
         ),
       },
     ],
-    [query, sessionRows.rows, t],
+    [query, agentRows.rows, t],
   );
   const fileSections = useMemo<CommandCenterResultSection[]>(() => {
     const results = fileSearchEntries.map<CommandCenterFileResult>((entry) => ({
@@ -364,10 +372,10 @@ function useCommandCenterState(): CommandCenterState {
   const projection = useMemo(() => {
     let sections: CommandCenterResultSection[];
     if (scope === "files") sections = fileSections;
-    else if (scope === "sessions") sections = sessionSections;
+    else if (scope === "agents") sections = agentSections;
     else sections = [...contributionSections, ...fileSections, ...builtInSections];
     return projectCommandCenterRows(sections);
-  }, [builtInSections, contributionSections, fileSections, scope, sessionSections]);
+  }, [agentSections, builtInSections, contributionSections, fileSections, scope]);
   const resolvedActiveId = preserveActiveResultId(activeId, projection.selectableResults);
 
   // Editing the query re-ranks everything, so an arrow-key selection made under the previous
@@ -448,7 +456,7 @@ function useCommandCenterState(): CommandCenterState {
     inputRef,
     fileSearchLoading,
     fileSearchError,
-    sessionsLoading: sessionRows.loading,
+    agentsLoading: agentRows.loading,
     close,
     select,
     key,
@@ -660,11 +668,11 @@ export function CommandCenter() {
   const scopeChip = state.scope ? (
     <ScopeChip
       label={t(
-        state.scope === "files" ? "shell.commandCenter.files" : "shell.commandCenter.sessions",
+        state.scope === "files" ? "shell.commandCenter.files" : "shell.commandCenter.agents",
       )}
       icon={state.scope === "files" ? ThemedFolder : ThemedMessageSquare}
       testID={
-        state.scope === "files" ? "command-center-files-scope" : "command-center-sessions-scope"
+        state.scope === "files" ? "command-center-files-scope" : "command-center-agents-scope"
       }
       onRemove={state.clearScope}
     />
@@ -672,10 +680,10 @@ export function CommandCenter() {
   const placeholder = t(
     state.scope ? SCOPE_PLACEHOLDER_KEY[state.scope] : "shell.commandCenter.placeholder",
   );
-  const searchLoading = state.fileSearchLoading || state.sessionsLoading;
+  const searchLoading = state.fileSearchLoading || state.agentsLoading;
   const searchLoadingLabel = t(
-    state.scope === "sessions"
-      ? "shell.commandCenter.searchingSessions"
+    state.scope === "agents"
+      ? "shell.commandCenter.searchingAgents"
       : "shell.commandCenter.searchingFiles",
   );
   const modalLayer = useGlobalWebOverlayLayer("modal", isWeb && state.open && !showBottomSheet);

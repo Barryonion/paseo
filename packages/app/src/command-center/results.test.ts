@@ -472,6 +472,19 @@ describe("filterAndRankBuiltInResults", () => {
     ).toEqual(["w0", "w1", "w2", "w3", "w4"]);
   });
 
+  it("honors a caller-provided empty-query limit, like the agents scope's 30", () => {
+    const rows = Array.from({ length: 40 }, (_, index) => workspace(`w${index}`));
+
+    const defaultCap = filterAndRankBuiltInResults(rows, "", visibleOnly, byTitle);
+    expect(defaultCap).toHaveLength(5);
+
+    const widened = filterAndRankBuiltInResults(rows, "", visibleOnly, byTitle, 30);
+    expect(widened).toHaveLength(30);
+    expect(widened.map((row) => row.id)).toEqual(
+      Array.from({ length: 30 }, (_, index) => `w${index}`),
+    );
+  });
+
   it("puts the best match first even when it sorts last alphabetically", () => {
     const rows = [
       workspace("a", "Zebra design system"),

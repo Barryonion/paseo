@@ -32,7 +32,7 @@ export type ShortcutAction =
   | { kind: "router-push"; route: string }
   | { kind: "open-project-picker" }
   | { kind: "callback"; name: ShortcutCallbackName }
-  | { kind: "command-center-toggle"; nextOpen: boolean; scope?: "files" | "sessions" }
+  | { kind: "command-center-toggle"; nextOpen: boolean; scope?: "files" | "agents" }
   | { kind: "shortcuts-dialog-toggle"; nextOpen: boolean };
 
 const NONE: ShortcutAction = { kind: "none" };
@@ -214,8 +214,8 @@ export function routeKeyboardShortcut(
         return { kind: "command-center-toggle", nextOpen: true, scope: "files" };
       }
       return dispatch({ id: "workspace.project.pick", scope: "workspace" });
-    case "command-center.sessions":
-      return { kind: "command-center-toggle", nextOpen: true, scope: "sessions" };
+    case "command-center.agents":
+      return { kind: "command-center-toggle", nextOpen: true, scope: "agents" };
     case "shortcuts.dialog.toggle":
       return { kind: "shortcuts-dialog-toggle", nextOpen: !ctx.shortcutsDialogOpen };
     default:

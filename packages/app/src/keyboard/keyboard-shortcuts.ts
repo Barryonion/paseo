@@ -157,7 +157,7 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
   general: [
     "toggle-command-center",
     "search-files",
-    "switch-session",
+    "switch-agent",
     "show-shortcuts",
     "toggle-settings",
     "cycle-theme",
@@ -235,7 +235,7 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "workspace-pane-close": "settings.shortcuts.help.closePane",
   "workspace-terminal-new": "settings.shortcuts.help.newTerminal",
   "search-files": "settings.shortcuts.help.searchFiles",
-  "switch-session": "settings.shortcuts.help.switchSession",
+  "switch-agent": "settings.shortcuts.help.switchAgent",
   "toggle-command-center": "settings.shortcuts.help.toggleCommandCenter",
   "show-shortcuts": "settings.shortcuts.help.showKeyboardShortcuts",
   "toggle-left-sidebar": "settings.shortcuts.help.toggleLeftSidebar",
@@ -335,27 +335,27 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
 
-  // --- Switch session (command center, sessions scope) ---
+  // --- Switch agent (command center, agents scope) ---
   {
     id: "command-center-sessions-cmd-shift-k-mac",
-    action: "command-center.sessions",
+    action: "command-center.agents",
     combo: "Cmd+Shift+K",
     when: { mac: true, commandCenter: false },
     help: {
-      id: "switch-session",
+      id: "switch-agent",
       section: "general",
-      label: "Switch session",
+      label: "Switch agent",
     },
   },
   {
     id: "command-center-sessions-ctrl-shift-k-non-mac",
-    action: "command-center.sessions",
+    action: "command-center.agents",
     combo: "Ctrl+Shift+K",
     when: { mac: false, commandCenter: false, terminal: false },
     help: {
-      id: "switch-session",
+      id: "switch-agent",
       section: "general",
-      label: "Switch session",
+      label: "Switch agent",
     },
   },
 

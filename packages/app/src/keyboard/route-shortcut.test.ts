@@ -394,16 +394,16 @@ describe("routeKeyboardShortcut — toggle dialogs", () => {
     });
   });
 
-  it("opens the command center scoped to sessions from anywhere", () => {
+  it("opens the command center scoped to agents from anywhere", () => {
     expect(
       routeKeyboardShortcut(
-        { action: "command-center.sessions", payload: null },
+        { action: "command-center.agents", payload: null },
         makeCtx({ pathname: "/settings" }),
       ),
     ).toEqual<ShortcutAction>({
       kind: "command-center-toggle",
       nextOpen: true,
-      scope: "sessions",
+      scope: "agents",
     });
   });
 

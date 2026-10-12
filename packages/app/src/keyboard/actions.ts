@@ -46,7 +46,7 @@ export type KeyboardActionId =
   | "settings.toggle"
   | "command-center.toggle"
   | "command-center.files"
-  | "command-center.sessions"
+  | "command-center.agents"
   | "shortcuts.dialog.toggle"
   | "workspace.terminal.new"
   | "workspace.new"
