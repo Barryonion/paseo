@@ -10,7 +10,7 @@ import {
   normalizeClaudeRuntimeModelId as normalizeClaudeManifestRuntimeModelId,
 } from "./model-manifest.js";
 
-const CLAUDE_SETTINGS_MODEL_ENV_KEYS = [
+export const CLAUDE_SETTINGS_MODEL_ENV_KEYS = [
   "ANTHROPIC_MODEL",
   "ANTHROPIC_SMALL_FAST_MODEL",
   "ANTHROPIC_DEFAULT_FABLE_MODEL",

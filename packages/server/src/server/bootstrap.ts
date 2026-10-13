@@ -132,6 +132,8 @@ import type { LocalSpeechProviderConfig } from "./speech/providers/local/config.
 import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
+import { ClaudeSettingsModelSync } from "./agent/providers/claude/settings-model-sync.js";
+import { claudeConfigDir } from "./agent/providers/claude/project-dir.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -971,6 +973,18 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  // External model switchers (e.g. CC Switch) rewrite Claude's settings.json;
+  // follow the switch into every Claude agent on this daemon.
+  const claudeSettingsModelSync = new ClaudeSettingsModelSync({
+    configDir: claudeConfigDir(process.env),
+    logger,
+    onChange: (modelId) => {
+      void agentManager
+        .syncClaudeAgentsToModel(modelId)
+        .catch((err) => logger.warn({ err }, "claude-settings-model-sync.apply-failed"));
+    },
+  });
+  claudeSettingsModelSync.start();
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,
@@ -1794,6 +1808,7 @@ export async function createPaseoDaemon(
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
+      claudeSettingsModelSync.dispose();
       await pluginRuntime.stopAllPlugins().catch(() => undefined);
       await serviceProxy.stopStandalone().catch(() => undefined);
       await agentProviderRuntime.shutdown().catch(() => undefined);
@@ -1816,6 +1831,7 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    claudeSettingsModelSync.dispose();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();

@@ -2054,6 +2054,66 @@ export class AgentManager {
     this.emitState(agent);
   }
 
+  /**
+   * Apply an externally switched model (see ClaudeSettingsModelSync) to every
+   * Claude agent on this daemon: live sessions go through setAgentModel so the
+   * provider picks it up mid-session, non-session and archived agents get their
+   * stored config patched so the next resume starts on the new model. Failures
+   * are per-agent and non-fatal — a session mid-restart keeps its own model
+   * rather than blocking the rest.
+   */
+  async syncClaudeAgentsToModel(modelId: string): Promise<void> {
+    const normalizedModelId = modelId.trim();
+    if (!normalizedModelId) {
+      return;
+    }
+    const liveIds = new Set<string>();
+    for (const agent of Array.from(this.agents.values())) {
+      if (agent.provider !== "claude" || agent.internal) {
+        continue;
+      }
+      liveIds.add(agent.id);
+      if (agent.config.model === normalizedModelId) {
+        continue;
+      }
+      try {
+        // Every agent in this map holds a live session (closed agents are removed).
+        await this.setAgentModel(agent.id, normalizedModelId);
+      } catch (error) {
+        this.logger.warn(
+          { err: error, agentId: agent.id, modelId: normalizedModelId },
+          "agent.model.external_sync_failed",
+        );
+      }
+    }
+    if (!this.registry) {
+      return;
+    }
+    const records = await this.registry.list();
+    for (const record of records) {
+      if (record.provider !== "claude" || record.internal || liveIds.has(record.id)) {
+        continue;
+      }
+      if (record.config?.model === normalizedModelId) {
+        continue;
+      }
+      try {
+        await this.registry.upsert({
+          ...record,
+          config: record.config ? { ...record.config, model: normalizedModelId } : record.config,
+          runtimeInfo: record.runtimeInfo
+            ? { ...record.runtimeInfo, model: normalizedModelId }
+            : record.runtimeInfo,
+        });
+      } catch (error) {
+        this.logger.warn(
+          { err: error, agentId: record.id, modelId: normalizedModelId },
+          "agent.model.external_sync_persist_failed",
+        );
+      }
+    }
+  }
+
   async setAgentThinkingOption(
     agentId: string,
     thinkingOptionId: string | null,
