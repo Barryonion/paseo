@@ -41,7 +41,12 @@ import {
   useKeyboardShortcutsStore,
   type CommandCenterScope,
 } from "@/stores/keyboard-shortcuts-store";
-import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import {
+  navigateToWorkspace,
+  useActiveWorkspaceSelection,
+} from "@/stores/navigation-active-workspace-store";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { getFocusedAgentId } from "@/plugins/command-center/context";
 import { useKeyboardActionDispatcher } from "@/keyboard/keyboard-action-dispatcher-context";
 import {
   clearCommandCenterFocusRestoreElement,
@@ -234,8 +239,27 @@ function compareAgentsByActivity(
 }
 
 /**
- * Agent rows for the agents scope: every agent on every connected host, archived
- * included, sorted by last activity and fuzzy-matched by name client-side. The
+ * `serverId:agentId` of the agent in the focused tab of the active workspace, or null
+ * outside a workspace. The agents scope drops it: switching to the tab you are already
+ * on is a no-op row.
+ */
+function useCurrentAgentKey(): string | null {
+  const selection = useActiveWorkspaceSelection();
+  const serverId = selection?.serverId ?? null;
+  const workspaceId = selection?.workspaceId ?? null;
+  const layout = useWorkspaceLayoutStore((state) =>
+    serverId && workspaceId
+      ? (state.layoutByWorkspace[`${serverId}:${workspaceId}`] ?? null)
+      : null,
+  );
+  const focusedAgentId = getFocusedAgentId(layout);
+  return serverId && focusedAgentId ? `${serverId}:${focusedAgentId}` : null;
+}
+
+/**
+ * Agent rows for the agents scope: every agent on every connected host except the
+ * one in the focused tab, archived included, sorted by last activity and
+ * fuzzy-matched by name client-side. The
  * scope holds directory demand itself (same as the built-in agents section), so
  * it works even when nothing else has woken the host.
  */
@@ -254,9 +278,11 @@ function useAgentDirectoryRows(
     includeArchived: true,
     demand: enabled,
   });
+  const currentAgentKey = useCurrentAgentKey();
   const rows = useMemo(() => {
     if (!enabled) return [];
     return agents
+      .filter((agent) => `${agent.serverId}:${agent.id}` !== currentAgentKey)
       .map<CommandCenterAgentResult>((agent) => ({
         kind: "agent",
         id: `agent:${agent.serverId}:${agent.id}`,
@@ -278,7 +304,7 @@ function useAgentDirectoryRows(
         },
       }))
       .sort(compareAgentsByActivity);
-  }, [agents, enabled, showHost, t]);
+  }, [agents, currentAgentKey, enabled, showHost, t]);
   return { rows, loading: isInitialLoad };
 }
 
