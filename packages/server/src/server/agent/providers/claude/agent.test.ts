@@ -793,6 +793,34 @@ describe("ClaudeAgentSession features", () => {
     await session.close();
   });
 
+  test("schedules a query restart when the live process rejects the model switch", async () => {
+    const { queryFactory, queryMock } = createQueryMock();
+    queryMock.setModel.mockRejectedValueOnce(
+      new Error("API error: 400 model not found · model not changed"),
+    );
+    const client = new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession({ provider: "claude", cwd: process.cwd() });
+    const ensureQuery = () =>
+      (session as unknown as { ensureQuery(): Promise<unknown> }).ensureQuery();
+
+    try {
+      await ensureQuery();
+      await expect(session.setModel?.("gpt-6-sol")).resolves.toBeUndefined();
+
+      // The rejected switch retires the process; the next query respawns with the
+      // new model id in its launch options (settings.json env is re-read there).
+      await ensureQuery();
+      expect(queryFactory).toHaveBeenCalledTimes(2);
+      expect(queryFactory.mock.calls[1]?.[0].options.model).toBe("gpt-6-sol");
+    } finally {
+      await session.close();
+    }
+  });
+
   test("preapproves only granted Hub MCP tools while preserving Claude denies", async () => {
     const { queryFactory } = createQueryMock();
     const client = new ClaudeAgentClient({

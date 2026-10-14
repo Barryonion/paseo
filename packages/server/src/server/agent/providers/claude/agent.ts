@@ -2528,7 +2528,21 @@ class ClaudeAgentSession implements AgentSession {
     const normalizedModelId =
       typeof modelId === "string" && modelId.trim().length > 0 ? modelId.trim() : null;
     const activeQuery = await this.ensureQuery();
-    await activeQuery.setModel(normalizedModelId ?? undefined);
+    try {
+      await activeQuery.setModel(normalizedModelId ?? undefined);
+    } catch (error) {
+      // The live process cannot take the model — typically an external switcher
+      // (CC Switch) repointed ANTHROPIC_BASE_URL in settings.json, so the model
+      // only exists on the new gateway the running process never saw. Retire the
+      // process instead of failing: the respawn re-reads settings.json env and
+      // buildOptions passes config.model, so the switch lands on the next turn.
+      // Same applies-next-turn contract as thinking-option changes.
+      this.logger.warn(
+        { err: error, modelId: normalizedModelId },
+        "claude.model_switch_rejected_restart_scheduled",
+      );
+      this.queryRestartNeeded = true;
+    }
     this.config.model = normalizedModelId ?? undefined;
     this.reconcileThinkingOptionForModel(normalizedModelId);
     if (!claudeModelSupportsFastMode(this.config.model) && this.config.featureValues?.fast_mode) {
