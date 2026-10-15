@@ -25,6 +25,7 @@ export type KeyboardActionId =
   | "workspace.tab.target.changes"
   | "workspace.tab.target.files"
   | "workspace.tab.close.current"
+  | "workspace.tab.reload.current"
   | "workspace.tab.navigate.index"
   | "workspace.tab.navigate.relative"
   | "workspace.pane.split.right"
