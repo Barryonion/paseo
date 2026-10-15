@@ -25,6 +25,7 @@ import {
   resolveEffectiveModel,
   normalizeSelectedModelId,
   resolveDefaultModelId,
+  findStalePreferredModels,
   mergeSelectedComposerPreferences,
   buildProviderDefinitionMap,
   buildProviderDefinitionMapForStatuses,
@@ -273,6 +274,32 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
     preferences,
     snapshotProviderModelsByProvider,
     snapshotResolvableProviderDefinitionMap,
+  ]);
+
+  // Correct stored model preferences the refreshed catalog no longer lists (an external
+  // switcher replaced the model), so the next new tab resolves to the catalog default
+  // instead of a dead model id.
+  useEffect(() => {
+    if (isPreferencesLoading) return;
+    const stale = findStalePreferredModels(snapshotProviderModelsByProvider, preferences);
+    if (!stale) return;
+    void updateCurrentPreferences((current) => {
+      const nextProviderPreferences = { ...current.providerPreferences };
+      for (const [provider, modelId] of stale) {
+        nextProviderPreferences[provider] = {
+          ...nextProviderPreferences[provider],
+          model: modelId,
+        };
+      }
+      return { ...current, providerPreferences: nextProviderPreferences };
+    }).catch(() => {
+      // Storage failure: the next snapshot/preference change retries.
+    });
+  }, [
+    isPreferencesLoading,
+    snapshotProviderModelsByProvider,
+    preferences,
+    updateCurrentPreferences,
   ]);
 
   const setProviderAndModelFromUser = useCallback(

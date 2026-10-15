@@ -8,6 +8,7 @@ import {
   buildProviderDefinitionMap,
   buildProviderDefinitionMapForStatuses,
   resolveDefaultModel,
+  findStalePreferredModels,
   INITIAL_USER_MODIFIED,
   PENDING_AGENT_FORM_RESOLUTION,
   type AgentFormReducerState,
@@ -201,6 +202,80 @@ describe("model aliases", () => {
 
     expect(resolved.model).toBe("gpt-5.3-codex-legacy");
     expect(resolved.thinkingOptionId).toBe("medium");
+  });
+});
+
+describe("findStalePreferredModels", () => {
+  it("maps a stored model the catalog no longer lists to the catalog default", () => {
+    const stale = findStalePreferredModels(
+      makeProviderModelsByProvider([["codex", CODEX_MODELS]]),
+      { provider: "codex", providerPreferences: { codex: { model: "gpt-6-astra" } } },
+    );
+
+    expect(stale).toEqual(new Map([["codex", "gpt-5.3-codex"]]));
+  });
+
+  it("returns null when the stored model is still listed, including via alias", () => {
+    const preferences = {
+      provider: "codex",
+      providerPreferences: { codex: { model: "gpt-5.3-codex-legacy" } },
+    };
+    expect(
+      findStalePreferredModels(
+        makeProviderModelsByProvider([["codex", ALIASED_CODEX_MODELS]]),
+        preferences,
+      ),
+    ).toBeNull();
+    expect(
+      findStalePreferredModels(makeProviderModelsByProvider([["codex", CODEX_MODELS]]), {
+        provider: "codex",
+        providerPreferences: { codex: { model: "gpt-5.3-codex" } },
+      }),
+    ).toBeNull();
+  });
+
+  it("skips providers with no stored model, no catalog, or a catalog without a default", () => {
+    // Blank stored model.
+    expect(
+      findStalePreferredModels(makeProviderModelsByProvider([["codex", CODEX_MODELS]]), {
+        provider: "codex",
+        providerPreferences: { codex: { model: "  " } },
+      }),
+    ).toBeNull();
+    // Catalog not ready (null).
+    expect(
+      findStalePreferredModels(makeProviderModelsByProvider([["codex", null]]), {
+        provider: "codex",
+        providerPreferences: { codex: { model: "gpt-6-astra" } },
+      }),
+    ).toBeNull();
+    // Empty catalog: no default to fall back to.
+    expect(
+      findStalePreferredModels(makeProviderModelsByProvider([["codex", []]]), {
+        provider: "codex",
+        providerPreferences: { codex: { model: "gpt-6-astra" } },
+      }),
+    ).toBeNull();
+    // No preferences at all.
+    expect(findStalePreferredModels(makeProviderModelsByProvider([]), {})).toBeNull();
+  });
+
+  it("reports only the stale providers and leaves the rest untouched", () => {
+    const stale = findStalePreferredModels(
+      makeProviderModelsByProvider([
+        ["codex", CODEX_MODELS],
+        ["claude", [{ provider: "claude", id: "claude-opus-5", label: "Opus 5", isDefault: true }]],
+      ]),
+      {
+        provider: "codex",
+        providerPreferences: {
+          codex: { model: "gpt-5.3-codex" },
+          claude: { model: "glm-5.3[1M]" },
+        },
+      },
+    );
+
+    expect(stale).toEqual(new Map([["claude", "claude-opus-5"]]));
   });
 });
 

@@ -3,41 +3,11 @@ import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { Logger } from "pino";
 
-import { CLAUDE_SETTINGS_MODEL_ENV_KEYS } from "./models.js";
+import { resolveClaudeSettingsModelId } from "./models.js";
 
 const SETTINGS_FILE_NAME = "settings.json";
 // Coalesces the burst of rename+write events an atomic settings replacement emits.
 const DEBOUNCE_MS = 300;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * The model an external switcher (e.g. CC Switch) just selected, as written into
- * Claude's settings.json. `env.ANTHROPIC_MODEL` is the canonical primary key and
- * wins; the remaining env keys follow in the same precedence the model list uses;
- * the top-level `model` field is the last resort. Null means "no model expressed",
- * never "clear the model" — callers keep the current selection on null.
- */
-export function resolveClaudeSettingsModelId(settings: unknown): string | null {
-  if (!isRecord(settings)) {
-    return null;
-  }
-  const env = settings.env;
-  if (isRecord(env)) {
-    for (const key of CLAUDE_SETTINGS_MODEL_ENV_KEYS) {
-      const value = env[key];
-      if (typeof value === "string" && value.trim().length > 0) {
-        return value.trim();
-      }
-    }
-  }
-  if (typeof settings.model === "string" && settings.model.trim().length > 0) {
-    return settings.model.trim();
-  }
-  return null;
-}
 
 export interface ClaudeSettingsModelSyncOptions {
   /** Claude config dir (claudeConfigDir); settings.json lives directly inside. */

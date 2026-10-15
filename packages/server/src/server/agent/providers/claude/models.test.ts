@@ -279,13 +279,17 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
       cwd: configDir,
       force: false,
     });
+    // The settings-named model becomes the catalog default, so the curated entries lose it.
     expect(models.filter((model) => model.id !== "claude-mythos-5-1")).toEqual(
-      getClaudeModels("2.1.293").filter((model) => model.id !== "claude-mythos-5-1"),
+      getClaudeModels("2.1.293")
+        .filter((model) => model.id !== "claude-mythos-5-1")
+        .map((model) => (model.isDefault ? Object.assign({}, model, { isDefault: false }) : model)),
     );
     expect(models.find((model) => model.id === "claude-mythos-5-1")).toEqual({
       ...findClaudeModel("claude-mythos-5-1"),
       label: "claude-mythos-5-1",
       description: "From Claude settings.json model",
+      isDefault: true,
     });
   });
 
@@ -367,7 +371,10 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
     });
 
     expect(models).toEqual([
-      ...getClaudeModels(),
+      // env.ANTHROPIC_MODEL names the primary model, so it takes isDefault from the manifest default.
+      ...getClaudeModels().map((model) =>
+        model.isDefault ? Object.assign({}, model, { isDefault: false }) : model,
+      ),
       {
         provider: "claude",
         id: "us.anthropic.claude-opus-4-7[1m]",
@@ -379,6 +386,7 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
         id: "openrouter/anthropic/claude-sonnet-4.5",
         label: "openrouter/anthropic/claude-sonnet-4.5",
         description: "From Claude settings.json env.ANTHROPIC_MODEL",
+        isDefault: true,
       },
       {
         provider: "claude",
@@ -413,6 +421,22 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
     ]);
     expect(models.filter((model) => model.id === "claude-fable-5-1[1M]")).toHaveLength(1);
     expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(true);
+  });
+
+  it("marks the model from settings.json as the catalog default", async () => {
+    const configDir = await createClaudeConfigDir({ env: { ANTHROPIC_MODEL: "qwen3.8-max-team" } });
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir);
+    const client = createCatalogClient();
+
+    const { models } = await client.fetchCatalog({
+      scope: "workspace",
+      cwd: os.tmpdir(),
+      force: true,
+    });
+
+    expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual([
+      "qwen3.8-max-team",
+    ]);
   });
 
   it("reads settings.json from the provider's own CLAUDE_CONFIG_DIR", async () => {

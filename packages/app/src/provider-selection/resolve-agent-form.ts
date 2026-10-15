@@ -135,6 +135,31 @@ export function resolveDefaultModelId(availableModels: AgentModelDefinition[] | 
   return resolveDefaultModel(availableModels)?.id ?? "";
 }
 
+/**
+ * Finds stored per-provider model preferences the catalog no longer lists — e.g. a model an
+ * external switcher (CC Switch) removed from Claude settings.json — and maps each provider to
+ * its catalog default. Returns null when nothing is stale.
+ */
+export function findStalePreferredModels(
+  providerModelsByProvider: ProviderModelsByProvider,
+  preferences: FormPreferences,
+): Map<string, string> | null {
+  let stale: Map<string, string> | null = null;
+  for (const [provider, providerPrefs] of Object.entries(preferences.providerPreferences ?? {})) {
+    const storedModel = normalizeSelectedModelId(providerPrefs?.model);
+    if (!storedModel) continue;
+    const catalog = providerModelsByProvider.get(provider as AgentProvider);
+    // Not ready: nothing to compare against.
+    if (!catalog) continue;
+    if (resolveEffectiveModel(catalog, storedModel)) continue;
+    const defaultModelId = resolveDefaultModelId(catalog);
+    if (!defaultModelId) continue;
+    stale ??= new Map();
+    stale.set(provider, defaultModelId);
+  }
+  return stale;
+}
+
 function resolveCanonicalModelId(
   availableModels: AgentModelDefinition[] | null,
   modelId: string,

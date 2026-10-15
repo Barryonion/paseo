@@ -982,6 +982,11 @@ export async function createPaseoDaemon(
       void agentManager
         .syncClaudeAgentsToModel(modelId)
         .catch((err) => logger.warn({ err }, "claude-settings-model-sync.apply-failed"));
+      // Rebuild the catalog so new tabs see the switched model as default and
+      // drop models the settings file no longer lists.
+      void providerSnapshotManager
+        .refreshSettingsSnapshot({ providers: ["claude"] })
+        .catch((err) => logger.warn({ err }, "claude-settings-model-sync.refresh-failed"));
     },
   });
   claudeSettingsModelSync.start();

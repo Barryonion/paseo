@@ -55,7 +55,10 @@ export async function getClaudeModelsWithSettings(
   discoveredModelIds: ReadonlySet<string> = new Set(),
 ): Promise<AgentModelDefinition[]> {
   const hardcodedModels = getClaudeManifestModels(claudeCodeVersion, discoveredModelIds);
-  const settingsModels = await readClaudeSettingsModels(logger, configDir);
+  const { models: settingsModels, primaryModelId } = await readClaudeSettingsModels(
+    logger,
+    configDir,
+  );
   if (settingsModels.length === 0) {
     return hardcodedModels;
   }
@@ -77,13 +80,53 @@ export async function getClaudeModelsWithSettings(
     models.push({ ...manifestModel, ...model });
   }
 
+  // The settings file names the model an external switcher (e.g. CC Switch) just
+  // selected; make it the catalog default so new agents follow the switch.
+  if (primaryModelId && models.some((model) => model.id === primaryModelId)) {
+    return models.map((model) => {
+      if (model.id === primaryModelId) {
+        return { ...model, isDefault: true };
+      }
+      return model.isDefault ? { ...model, isDefault: false } : model;
+    });
+  }
+
   return models;
+}
+
+/**
+ * The model an external switcher (e.g. CC Switch) just selected, as written into Claude's
+ * settings.json. `env.ANTHROPIC_MODEL` is the canonical primary key and wins; the remaining env
+ * keys follow in the same precedence the model list uses; the top-level `model` field is the
+ * last resort. Null means "no model expressed", never "clear the model" — callers keep the
+ * current selection on null.
+ */
+export function resolveClaudeSettingsModelId(settings: unknown): string | null {
+  if (!isRecord(settings)) {
+    return null;
+  }
+
+  const env = settings.env;
+  if (isRecord(env)) {
+    for (const key of CLAUDE_SETTINGS_MODEL_ENV_KEYS) {
+      const value = env[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value.trim();
+      }
+    }
+  }
+
+  if (typeof settings.model === "string" && settings.model.trim().length > 0) {
+    return settings.model.trim();
+  }
+
+  return null;
 }
 
 async function readClaudeSettingsModels(
   logger: Logger,
   configDir: string,
-): Promise<AgentModelDefinition[]> {
+): Promise<{ models: AgentModelDefinition[]; primaryModelId: string | null }> {
   const settingsPath = path.join(configDir, "settings.json");
 
   let parsed: unknown;
@@ -92,31 +135,32 @@ async function readClaudeSettingsModels(
     parsed = JSON.parse(rawSettings);
   } catch (error) {
     logger.debug({ err: error, settingsPath }, "Failed to read Claude settings models");
-    return [];
+    return { models: [], primaryModelId: null };
   }
 
   if (!isRecord(parsed)) {
     logger.debug({ settingsPath }, "Claude settings.json is not an object");
-    return [];
+    return { models: [], primaryModelId: null };
   }
 
+  const primaryModelId = resolveClaudeSettingsModelId(parsed);
   const models: AgentModelDefinition[] = [];
   addSettingsModel(models, parsed.model, "model");
 
   const env = parsed.env;
   if (env === undefined) {
-    return models;
+    return { models, primaryModelId };
   }
   if (!isRecord(env)) {
     logger.debug({ settingsPath }, "Claude settings.json env is not an object");
-    return models;
+    return { models, primaryModelId };
   }
 
   for (const envKey of CLAUDE_SETTINGS_MODEL_ENV_KEYS) {
     addSettingsModel(models, env[envKey], `env.${envKey}`);
   }
 
-  return models;
+  return { models, primaryModelId };
 }
 
 function addSettingsModel(

@@ -4,7 +4,8 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createTestLogger } from "../../../../test-utils/test-logger.js";
-import { ClaudeSettingsModelSync, resolveClaudeSettingsModelId } from "./settings-model-sync.js";
+import { resolveClaudeSettingsModelId } from "./models.js";
+import { ClaudeSettingsModelSync } from "./settings-model-sync.js";
 
 const tempDirs: string[] = [];
 
